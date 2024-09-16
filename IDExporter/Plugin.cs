@@ -148,6 +148,8 @@ public class IDExporter : TerrariaPlugin
 
         Write("NPC_ID.json", npcs);
         Console.WriteLine($"[IdExporter]导出{npcs.Count}个生物...");
+        
+        Environment.Exit(0);
     }
 
 
