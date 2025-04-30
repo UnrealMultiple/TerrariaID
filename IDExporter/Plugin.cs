@@ -1,15 +1,24 @@
-﻿using Newtonsoft.Json;
+﻿using System.IO.Compression;
+using System.Reflection;
+using System.Text.RegularExpressions;
+using Microsoft.Xna.Framework;
+using Newtonsoft.Json;
+using NuGet.Packaging;
+using ReLogic.Content.Sources;
 using Terraria;
 using Terraria.GameContent.Bestiary;
 using Terraria.ID;
+using Terraria.IO;
 using Terraria.Localization;
 using Terraria.UI;
 using TerrariaApi.Server;
+using TShockAPI;
+using Utils = Terraria.Utils;
 
 namespace IDExporter;
 
 [ApiVersion(2, 1)]
-public class IDExporter : TerrariaPlugin
+public partial class IDExporter : TerrariaPlugin
 {
     public IDExporter(Main game)
         : base(game)
@@ -21,7 +30,7 @@ public class IDExporter : TerrariaPlugin
     public override string Description => "IDExporter";
 
     public override string Name => "导出泰拉瑞亚ID!!!";
-    public override Version Version => new(2024, 9, 16, 1);
+    public override Version Version => new(2025, 4, 30, 1);
 
     public override void Initialize()
     {
@@ -35,30 +44,113 @@ public class IDExporter : TerrariaPlugin
         base.Dispose(disposing);
     }
 
+    public string ReplaceTag(string input)
+    {
+        string[] lines = input.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+
+        // 匹配 ItemTag 的正则
+        Regex itemTagRegex = new Regex(@"\[i(?:tem)?(?:\/s(?<Stack>\d{1,4}))?(?:\/p(?<Prefix>\d{1,3}))?:(?<NetID>-?\d{1,4})\]");
+        // 匹配 ColorTag 的正则
+        Regex colorTagRegex = new Regex(@"\[c\/(?<color>[0-9a-fA-F]{6}):(?<text>.*?)\]");
+
+        for (int i = 0; i < lines.Length; i++)
+        {
+            // 先处理ItemTag
+            lines[i] = itemTagRegex.Replace(lines[i], match =>
+            {
+                Item item = TShock.Utils.GetItemFromTag(match.Value);
+                string replacement = "";
+ 
+                // 检查是否在行首
+                if (match.Index == 0)
+                    replacement = "#️⃣"; // 行首添加前缀
+
+                return replacement;
+            });
+
+            // 再处理ColorTag
+            lines[i] = colorTagRegex.Replace(lines[i], match =>
+            {
+                string hexColor = match.Groups["color"].Value;
+                string text = match.Groups["text"].Value;
+
+                // 检查是否在行首
+                bool isLineStart = (match.Index == 0);
+
+                if (hexColor.Length == 6 &&
+                    int.TryParse(hexColor, System.Globalization.NumberStyles.HexNumber, null, out int rgb))
+                {
+                    return isLineStart 
+                        ? $"🌈{text}"
+                        : $"{text}";
+                }
+
+                return text; // 无效颜色标签
+            });
+        }
+
+        // 重新拼接所有行
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private void LoadResources()
+    {
+        GameServiceContainer services = new();
+
+        Utils.TryCreatingDirectory(@"tshock/ResourcePacks/");
+        List<IContentSource> list = new();
+        foreach (string directory in Directory.GetDirectories(@"tshock/ResourcePacks/"))
+            try
+            {
+                ResourcePack pack = new(services, directory);
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine(
+                    $"[PackLoader]{pack.Name}已经加载！ v{pack.Version.Major}.{pack.Version.Minor} by {pack.Author}");
+
+                Console.ResetColor();
+
+                list.Add(pack.GetContentSource());
+            }
+            catch (Exception ex)
+            {
+                TShock.Log.ConsoleError($"[PackLoader]{directory}加载失败! {ex.Message}");
+            }
+
+
+        LanguageManager.Instance.UseSources(list);
+    }
+
     private void OnGamePostInitialize(EventArgs args)
     {
         Task.Run(() =>
         {
+            LoadResources();
             Thread.Sleep(5000);
+
+
             string folderPath = "TerrariaID";
             if (!Directory.Exists(folderPath)) Directory.CreateDirectory(folderPath);
 
 
             List<PrefixInfo> prefixInfos = new();
 
-            foreach (KeyValuePair<int, string> i in BuffID.Search._idToName)
+            for (int i = 0; i < PrefixID.Count; i++)
                 try
                 {
-                    PrefixInfo prefixInfo = new();
-                    prefixInfo.PrefixId = i.Key;
-                    prefixInfo.Name = Lang.prefix[i.Key].Value;
+                    PrefixInfo prefixInfo = new()
+                    {
+                        PrefixId = i,
+                        Name = Lang.prefix[i].Value
+                    };
+
                     prefixInfos.Add(prefixInfo);
                 }
-                catch
+                catch (Exception ex)
                 {
+                    TShock.Log.ConsoleError($"[PrefixExporter]{i.ToString()}导出失败! {ex.Message}");
                 }
 
-            Write("Prefix_ID.json", prefixInfos);
+            Write("prefix_id.json", prefixInfos);
             Console.WriteLine($"[IdExporter]导出{prefixInfos.Count}个修饰语...");
 
             List<BuffInfo> buffInfos = new();
@@ -66,22 +158,25 @@ public class IDExporter : TerrariaPlugin
             foreach (KeyValuePair<int, string> i in BuffID.Search._idToName)
                 try
                 {
-                    BuffInfo buffInfo = new();
-                    buffInfo.BuffId = i.Key;
-                    buffInfo.Name = Lang.GetBuffName(i.Key);
-                    buffInfo.Description = Lang.GetBuffDescription(i.Key);
+                    BuffInfo buffInfo = new()
+                    {
+                        BuffId = i.Key,
+                        Name = Lang.GetBuffName(i.Key),
+                        Description = ReplaceTag(Lang.GetBuffDescription(i.Key))
+                    };
                     buffInfos.Add(buffInfo);
                 }
-                catch
+                catch (Exception ex)
                 {
+                    TShock.Log.ConsoleError($"[BuffExporter]{folderPath}导出失败! {ex.Message}");
                 }
 
-            Write("Buff_ID.json", buffInfos);
+            Write("buff_id.json", buffInfos);
             Console.WriteLine($"[IdExporter]导出{buffInfos.Count}个Buff...");
 
             List<ProjectInfo> projectInfos = new();
 
-            Projectile projectile = new();
+            Projectile projectile;
 
             foreach (KeyValuePair<int, string> i in ProjectileID.Search._idToName)
                 try
@@ -95,27 +190,29 @@ public class IDExporter : TerrariaPlugin
                     projectInfo.AiStyle = projectile.aiStyle;
                     projectInfos.Add(projectInfo);
                 }
-                catch
+                catch (Exception ex)
                 {
+                    TShock.Log.ConsoleError($"[ProjectileExporter]{i.ToString()}导出失败! {ex.Message}");
                 }
 
-            Write("Project_ID.json", projectInfos);
+            Write("project_id.json", projectInfos);
             Console.WriteLine($"[IdExporter]导出{projectInfos.Count}个弹幕...");
 
             List<ItemInfo> itemInfos = new();
 
-            Item item = new();
+            Item item;
 
             foreach (KeyValuePair<int, string> i in ItemID.Search._idToName)
                 try
                 {
+                    if (i.Key < 0) continue;
                     ItemInfo itemInfo = new();
 
                     item = new Item();
 
                     item.SetDefaults(i.Key);
                     if (Lang.GetTooltip(i.Key) != ItemTooltip.None)
-                        itemInfo.Description = Lang.GetTooltip(i.Key)._text.Value;
+                        itemInfo.Description = ReplaceTag(Lang.GetTooltip(i.Key)._text.Value);
                     itemInfo.Name = Lang.GetItemNameValue(i.Key);
                     itemInfo.ItemId = i.Key;
                     itemInfo.Damage = item.damage;
@@ -123,17 +220,19 @@ public class IDExporter : TerrariaPlugin
                     itemInfo.MaxStack = item.maxStack;
                     itemInfos.Add(itemInfo);
                 }
-                catch
+                catch (Exception ex)
                 {
+                    TShock.Log.ConsoleError($"[ItemExporter]{i.ToString()}导出失败! {ex.Message}");
                 }
 
-            Write("Item_ID.json", itemInfos);
+            Write("item_id.json", itemInfos);
             Console.WriteLine($"[IdExporter]导出{itemInfos.Count}个弹幕...");
 
             List<NpcInfo> npcs = new();
             foreach (KeyValuePair<int, string> i in NPCID.Search._idToName)
                 try
                 {
+                    if (i.Key < 0) continue;
                     NpcInfo npc = new();
                     NPCStatsReportInfoElement npcStatsReportInfoElement = new(i.Key);
                     npc.Name = Lang.GetNPCNameValue(i.Key);
@@ -143,14 +242,15 @@ public class IDExporter : TerrariaPlugin
                     npc.MonetaryValue = new CoinValue((int)npcStatsReportInfoElement.MonetaryValue);
                     string key = "Bestiary_FlavorText.npc_" + Lang.GetNPCName(i.Key).Key.Replace("NPCName.", "");
                     if (Language.Exists(key))
-                        npc.Description = Language.GetText(key).Value;
+                        npc.Description = ReplaceTag(Language.GetText(key).Value);
                     npcs.Add(npc);
                 }
-                catch
+                catch (Exception ex)
                 {
+                    TShock.Log.ConsoleError($"[NPCExporter]{i.ToString()}导出失败! {ex.Message}");
                 }
 
-            Write("NPC_ID.json", npcs);
+            Write("npc_id.json", npcs);
             Console.WriteLine($"[IdExporter]导出{npcs.Count}个生物...");
 
             Environment.Exit(0);
@@ -158,15 +258,13 @@ public class IDExporter : TerrariaPlugin
     }
 
 
-    public static void Write(string filename, object obj)
+    private static void Write(string filename, object obj)
     {
         using FileStream fileStream =
             new($"TerrariaID/{filename}", FileMode.Create, FileAccess.Write, FileShare.Write);
         string value = JsonConvert.SerializeObject(obj, Formatting.Indented);
-        using (StreamWriter streamWriter = new(fileStream))
-        {
-            streamWriter.Write(value);
-        }
+        using StreamWriter streamWriter = new(fileStream);
+        streamWriter.Write(value);
     }
 
 
