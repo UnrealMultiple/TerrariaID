@@ -46,6 +46,7 @@ public partial class IDExporter : TerrariaPlugin
 
     public string ReplaceTag(string input)
     {
+        input = input.Replace("<right>", "右键").Replace("<left>", "左键");
         string[] lines = input.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
 
         // 匹配 ItemTag 的正则
@@ -64,6 +65,22 @@ public partial class IDExporter : TerrariaPlugin
                 // 检查是否在行首
                 if (match.Index == 0)
                     replacement = "#️⃣"; // 行首添加前缀
+
+                else
+                {
+                    // 当出现[i:4959]Item.Name时删除[i:4959]
+                    // Check if the text after the match is the item's name
+                    int nextCharPos = match.Index + match.Length;
+                    if (nextCharPos < lines[i].Length && 
+                        lines[i].Substring(nextCharPos).StartsWith(item.Name))
+                    {
+                        replacement = ""; // 完全删除这个标签
+                    }
+                    else
+                    {
+                        replacement = item.Name; // 保持原样
+                    }
+                }
 
                 return replacement;
             });
@@ -213,7 +230,22 @@ public partial class IDExporter : TerrariaPlugin
                     item.SetDefaults(i.Key);
                     if (Lang.GetTooltip(i.Key) != ItemTooltip.None)
                         itemInfo.Description = ReplaceTag(Lang.GetTooltip(i.Key)._text.Value);
+                    
+                    
                     itemInfo.Name = Lang.GetItemNameValue(i.Key);
+                    switch (itemInfo.Name)
+                    {
+                        case "蕴水叶":
+                            itemInfo.Name = "水叶草";
+                            break;
+                        case "附灵飞斧":
+                            itemInfo.Name = "疯狂飞斧";
+                            break;
+                        case "恒星曲调":
+                            itemInfo.Name = "星星吉他";
+                            break;
+                            
+                    }
                     itemInfo.ItemId = i.Key;
                     itemInfo.Damage = item.damage;
                     itemInfo.MonetaryValue = new CoinValue(item.value);
