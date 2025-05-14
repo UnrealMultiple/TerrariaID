@@ -30,17 +30,20 @@ public partial class IDExporter : TerrariaPlugin
     public override string Description => "IDExporter";
 
     public override string Name => "导出泰拉瑞亚ID!!!";
-    public override Version Version => new(2025, 4, 30, 1);
+    public override Version Version => new(2025, 5, 10, 1);
 
     public override void Initialize()
     {
-        ServerApi.Hooks.GamePostInitialize.Register(this, OnGamePostInitialize);
+        Commands.ChatCommands.Add(new Command(Dump, "dump"));
     }
 
     protected override void Dispose(bool disposing)
     {
         if (disposing)
-            ServerApi.Hooks.GamePostInitialize.Deregister(this, OnGamePostInitialize);
+        {
+            Commands.ChatCommands.RemoveAll(x=> x.CommandDelegate == Dump);
+        }
+            
         base.Dispose(disposing);
     }
 
@@ -50,9 +53,10 @@ public partial class IDExporter : TerrariaPlugin
         string[] lines = input.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
 
         // 匹配 ItemTag 的正则
-        Regex itemTagRegex = new Regex(@"\[i(?:tem)?(?:\/s(?<Stack>\d{1,4}))?(?:\/p(?<Prefix>\d{1,3}))?:(?<NetID>-?\d{1,4})\]");
+        Regex itemTagRegex =
+            new(@"\[i(?:tem)?(?:\/s(?<Stack>\d{1,4}))?(?:\/p(?<Prefix>\d{1,3}))?:(?<NetID>-?\d{1,4})\]");
         // 匹配 ColorTag 的正则
-        Regex colorTagRegex = new Regex(@"\[c\/(?<color>[0-9a-fA-F]{6}):(?<text>.*?)\]");
+        Regex colorTagRegex = new(@"\[c\/(?<color>[0-9a-fA-F]{6}):(?<text>.*?)\]");
 
         for (int i = 0; i < lines.Length; i++)
         {
@@ -61,25 +65,23 @@ public partial class IDExporter : TerrariaPlugin
             {
                 Item item = TShock.Utils.GetItemFromTag(match.Value);
                 string replacement = "";
- 
+
                 // 检查是否在行首
                 if (match.Index == 0)
+                {
                     replacement = "#️⃣"; // 行首添加前缀
+                }
 
                 else
                 {
                     // 当出现[i:4959]Item.Name时删除[i:4959]
                     // Check if the text after the match is the item's name
                     int nextCharPos = match.Index + match.Length;
-                    if (nextCharPos < lines[i].Length && 
+                    if (nextCharPos < lines[i].Length &&
                         lines[i].Substring(nextCharPos).StartsWith(item.Name))
-                    {
                         replacement = ""; // 完全删除这个标签
-                    }
                     else
-                    {
                         replacement = item.Name; // 保持原样
-                    }
                 }
 
                 return replacement;
@@ -92,15 +94,13 @@ public partial class IDExporter : TerrariaPlugin
                 string text = match.Groups["text"].Value;
 
                 // 检查是否在行首
-                bool isLineStart = (match.Index == 0);
+                bool isLineStart = match.Index == 0;
 
                 if (hexColor.Length == 6 &&
                     int.TryParse(hexColor, System.Globalization.NumberStyles.HexNumber, null, out int rgb))
-                {
-                    return isLineStart 
+                    return isLineStart
                         ? $"🌈{text}"
                         : $"{text}";
-                }
 
                 return text; // 无效颜色标签
             });
@@ -119,6 +119,7 @@ public partial class IDExporter : TerrariaPlugin
         foreach (string directory in Directory.GetDirectories(@"tshock/ResourcePacks/"))
             try
             {
+                if (directory.Contains("2440470208")) continue;
                 ResourcePack pack = new(services, directory);
                 Console.ForegroundColor = ConsoleColor.Green;
                 Console.WriteLine(
@@ -137,156 +138,250 @@ public partial class IDExporter : TerrariaPlugin
         LanguageManager.Instance.UseSources(list);
     }
 
-    private void OnGamePostInitialize(EventArgs args)
+    private void LoadStandard()
     {
-        Task.Run(() =>
+        GameServiceContainer services = new();
+
+        Utils.TryCreatingDirectory(@"tshock/ResourcePacks/");
+        List<IContentSource> list = new();
+        try
         {
-            LoadResources();
-            Thread.Sleep(5000);
+            ResourcePack pack = new(services, @"tshock/ResourcePacks/2440470208");
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine(
+                $"[PackLoader]{pack.Name}已经加载！ v{pack.Version.Major}.{pack.Version.Minor} by {pack.Author}");
+
+            Console.ResetColor();
+
+            list.Add(pack.GetContentSource());
+        }
+        catch (Exception ex)
+        {
+            TShock.Log.ConsoleError($"[PackLoader]Standard加载失败! {ex.Message}");
+        }
 
 
-            string folderPath = "TerrariaID";
-            if (!Directory.Exists(folderPath)) Directory.CreateDirectory(folderPath);
+        LanguageManager.Instance.UseSources(list);
+    }
 
+    private void Dump(CommandArgs args)
+    {
+        // Create dictionaries to store original names before loading resources
+        Dictionary<int, List<string>> originalPrefixNames = new();
+        Dictionary<int, List<string>> originalBuffNames = new();
+        Dictionary<int, List<string>> originalProjectileNames = new();
+        Dictionary<int, List<string>> originalItemNames = new();
+        Dictionary<int, List<string>> originalNpcNames = new();
 
-            List<PrefixInfo> prefixInfos = new();
+        // Record original names
+        for (int i = 0; i < PrefixID.Count; i++)
+        {
+            originalPrefixNames[i] = new List<string>();
+            originalPrefixNames[i].Add(Lang.prefix[i].Value);
+        }
 
-            for (int i = 0; i < PrefixID.Count; i++)
-                try
+        foreach (KeyValuePair<int, string> i in BuffID.Search._idToName)
+        {
+            originalBuffNames[i.Key] = new List<string>();
+            originalBuffNames[i.Key].Add(Lang.GetBuffName(i.Key));
+        }
+
+        foreach (KeyValuePair<int, string> i in ProjectileID.Search._idToName)
+        {
+            originalProjectileNames[i.Key] = new List<string>();
+            originalProjectileNames[i.Key].Add(Lang.GetProjectileName(i.Key).Value);
+        }
+
+        foreach (KeyValuePair<int, string> i in ItemID.Search._idToName)
+            if (i.Key >= 0)
+            {
+                originalItemNames[i.Key] = new List<string>();
+                originalItemNames[i.Key].Add(Lang.GetItemNameValue(i.Key));
+            }
+
+        foreach (KeyValuePair<int, string> i in NPCID.Search._idToName)
+            if (i.Key >= 0)
+            {
+                originalNpcNames[i.Key] = new List<string>();
+                originalNpcNames[i.Key].Add(Lang.GetNPCNameValue(i.Key));
+            }
+
+        LoadStandard();
+
+        // Record original names
+        for (int i = 0; i < PrefixID.Count; i++)
+            if (!originalPrefixNames[i].Contains(Lang.prefix[i].Value))
+                originalPrefixNames[i].Add(Lang.prefix[i].Value);
+
+        foreach (KeyValuePair<int, string> i in BuffID.Search._idToName)
+            if (!originalBuffNames[i.Key].Contains(Lang.GetBuffName(i.Key)))
+                originalBuffNames[i.Key].Add(Lang.GetBuffName(i.Key));
+
+        foreach (KeyValuePair<int, string> i in ProjectileID.Search._idToName)
+            if (!originalProjectileNames[i.Key].Contains(Lang.GetProjectileName(i.Key).Value))
+                originalProjectileNames[i.Key].Add(Lang.GetProjectileName(i.Key).Value);
+
+        foreach (KeyValuePair<int, string> i in ItemID.Search._idToName)
+            if (i.Key >= 0)
+                if (!originalItemNames[i.Key].Contains(Lang.GetItemNameValue(i.Key)))
+                    originalItemNames[i.Key].Add(Lang.GetItemNameValue(i.Key));
+
+        foreach (KeyValuePair<int, string> i in NPCID.Search._idToName)
+            if (i.Key >= 0)
+                if (!originalNpcNames[i.Key].Contains(Lang.GetNPCNameValue(i.Key)))
+                    originalNpcNames[i.Key].Add(Lang.GetNPCNameValue(i.Key));
+
+        // Now load resources
+        LoadResources();
+        Thread.Sleep(5000);
+
+        string folderPath = "TerrariaID";
+        if (!Directory.Exists(folderPath)) Directory.CreateDirectory(folderPath);
+
+        // Process prefixes with alias checking
+        List<PrefixInfo> prefixInfos = new();
+        for (int i = 0; i < PrefixID.Count; i++)
+            try
+            {
+                string currentName = Lang.prefix[i].Value;
+                PrefixInfo prefixInfo = new()
                 {
-                    PrefixInfo prefixInfo = new()
-                    {
-                        PrefixId = i,
-                        Name = Lang.prefix[i].Value
-                    };
+                    PrefixId = i,
+                    Name = currentName
+                };
 
-                    prefixInfos.Add(prefixInfo);
-                }
-                catch (Exception ex)
+                // Check if name changed after loading resources
+                if (originalPrefixNames.TryGetValue(i, out List<string>? originalName) &&
+                    !originalName.Contains(currentName)) prefixInfo.Alias.AddRange(originalName);
+                prefixInfos.Add(prefixInfo);
+            }
+            catch (Exception ex)
+            {
+                TShock.Log.ConsoleError($"[PrefixExporter]{i.ToString()}导出失败! {ex.Message}");
+            }
+
+        // Process buffs with alias checking
+        List<BuffInfo> buffInfos = new();
+        foreach (KeyValuePair<int, string> i in BuffID.Search._idToName)
+            try
+            {
+                string currentName = Lang.GetBuffName(i.Key);
+                BuffInfo buffInfo = new()
                 {
-                    TShock.Log.ConsoleError($"[PrefixExporter]{i.ToString()}导出失败! {ex.Message}");
-                }
+                    BuffId = i.Key,
+                    Name = currentName,
+                    Description = ReplaceTag(Lang.GetBuffDescription(i.Key))
+                };
 
-            Write("prefix_id.json", prefixInfos);
-            Console.WriteLine($"[IdExporter]导出{prefixInfos.Count}个修饰语...");
+                if (originalBuffNames.TryGetValue(i.Key, out List<string>? originalName) &&
+                    !originalName.Contains(currentName)) buffInfo.Alias.AddRange(originalName);
+                buffInfos.Add(buffInfo);
+            }
+            catch (Exception ex)
+            {
+                TShock.Log.ConsoleError($"[BuffExporter]{folderPath}导出失败! {ex.Message}");
+            }
 
-            List<BuffInfo> buffInfos = new();
+        // Process projectiles with alias checking
+        List<ProjectInfo> projectInfos = new();
+        foreach (KeyValuePair<int, string> i in ProjectileID.Search._idToName)
+            try
+            {
+                string currentName = Lang.GetProjectileName(i.Key).Value;
+                ProjectInfo projectInfo = new();
+                Projectile projectile = new();
+                projectile.SetDefaults(i.Key);
+                projectInfo.Name = currentName;
+                projectInfo.ProjId = i.Key;
+                projectInfo.Friendly = projectile.friendly;
+                projectInfo.AiStyle = projectile.aiStyle;
 
-            foreach (KeyValuePair<int, string> i in BuffID.Search._idToName)
-                try
-                {
-                    BuffInfo buffInfo = new()
-                    {
-                        BuffId = i.Key,
-                        Name = Lang.GetBuffName(i.Key),
-                        Description = ReplaceTag(Lang.GetBuffDescription(i.Key))
-                    };
-                    buffInfos.Add(buffInfo);
-                }
-                catch (Exception ex)
-                {
-                    TShock.Log.ConsoleError($"[BuffExporter]{folderPath}导出失败! {ex.Message}");
-                }
+                if (originalProjectileNames.TryGetValue(i.Key, out List<string>? originalName) &&
+                    !originalName.Contains(currentName)) projectInfo.Alias.AddRange(originalName);
+                projectInfos.Add(projectInfo);
+            }
+            catch (Exception ex)
+            {
+                TShock.Log.ConsoleError($"[ProjectileExporter]{i.ToString()}导出失败! {ex.Message}");
+            }
 
-            Write("buff_id.json", buffInfos);
-            Console.WriteLine($"[IdExporter]导出{buffInfos.Count}个Buff...");
+        // Process items with alias checking and manual overrides
+        List<ItemInfo> itemInfos = new();
+        foreach (KeyValuePair<int, string> i in ItemID.Search._idToName)
+            try
+            {
+                if (i.Key < 0) continue;
+                string currentName = Lang.GetItemNameValue(i.Key);
+                ItemInfo itemInfo = new();
+                Item item = new();
+                item.SetDefaults(i.Key);
 
-            List<ProjectInfo> projectInfos = new();
+                if (Lang.GetTooltip(i.Key) != ItemTooltip.None)
+                    itemInfo.Description = ReplaceTag(Lang.GetTooltip(i.Key)._text.Value);
 
-            Projectile projectile;
+                itemInfo.Name = currentName;
 
-            foreach (KeyValuePair<int, string> i in ProjectileID.Search._idToName)
-                try
-                {
-                    ProjectInfo projectInfo = new();
-                    projectile = new Projectile();
-                    projectile.SetDefaults(i.Key);
-                    projectInfo.Name = Lang.GetProjectileName(i.Key).Value;
-                    projectInfo.ProjId = i.Key;
-                    projectInfo.Friendly = projectile.friendly;
-                    projectInfo.AiStyle = projectile.aiStyle;
-                    projectInfos.Add(projectInfo);
-                }
-                catch (Exception ex)
-                {
-                    TShock.Log.ConsoleError($"[ProjectileExporter]{i.ToString()}导出失败! {ex.Message}");
-                }
+                // Then check if name changed from original
+                if (originalItemNames.TryGetValue(i.Key, out List<string>? originalName) &&
+                    !originalName.Contains(currentName)) itemInfo.Alias.AddRange(originalName);
 
-            Write("project_id.json", projectInfos);
-            Console.WriteLine($"[IdExporter]导出{projectInfos.Count}个弹幕...");
+                itemInfo.ItemId = i.Key;
+                itemInfo.Damage = item.damage;
+                itemInfo.MonetaryValue = new CoinValue(item.value);
+                itemInfo.MaxStack = item.maxStack;
+                itemInfos.Add(itemInfo);
+            }
+            catch (Exception ex)
+            {
+                TShock.Log.ConsoleError($"[ItemExporter]{i.ToString()}导出失败! {ex.Message}");
+            }
 
-            List<ItemInfo> itemInfos = new();
+        // Process NPCs with alias checking
+        List<NpcInfo> npcs = new();
+        foreach (KeyValuePair<int, string> i in NPCID.Search._idToName)
+            try
+            {
+                if (i.Key < 0) continue;
+                string currentName = Lang.GetNPCNameValue(i.Key);
+                NpcInfo npc = new();
+                NPCStatsReportInfoElement npcStatsReportInfoElement = new(i.Key);
+                npc.Name = currentName;
+                npc.NpcId = i.Key;
+                npc.Damage = npcStatsReportInfoElement.Damage;
+                npc.LifeMax = npcStatsReportInfoElement.LifeMax;
+                npc.MonetaryValue = new CoinValue((int)npcStatsReportInfoElement.MonetaryValue);
 
-            Item item;
+                if (originalNpcNames.TryGetValue(i.Key, out List<string>? originalName) &&
+                    !originalName.Contains(currentName)) npc.Alias.AddRange(originalName);
 
-            foreach (KeyValuePair<int, string> i in ItemID.Search._idToName)
-                try
-                {
-                    if (i.Key < 0) continue;
-                    ItemInfo itemInfo = new();
+                string key = "Bestiary_FlavorText.npc_" + Lang.GetNPCName(i.Key).Key.Replace("NPCName.", "");
+                if (Language.Exists(key))
+                    npc.Description = ReplaceTag(Language.GetText(key).Value);
+                npcs.Add(npc);
+            }
+            catch (Exception ex)
+            {
+                TShock.Log.ConsoleError($"[NPCExporter]{i.ToString()}导出失败! {ex.Message}");
+            }
 
-                    item = new Item();
 
-                    item.SetDefaults(i.Key);
-                    if (Lang.GetTooltip(i.Key) != ItemTooltip.None)
-                        itemInfo.Description = ReplaceTag(Lang.GetTooltip(i.Key)._text.Value);
-                    
-                    
-                    itemInfo.Name = Lang.GetItemNameValue(i.Key);
-                    switch (itemInfo.Name)
-                    {
-                        case "蕴水叶":
-                            itemInfo.Name = "水叶草";
-                            break;
-                        case "附灵飞斧":
-                            itemInfo.Name = "疯狂飞斧";
-                            break;
-                        case "恒星曲调":
-                            itemInfo.Name = "星星吉他";
-                            break;
-                            
-                    }
-                    itemInfo.ItemId = i.Key;
-                    itemInfo.Damage = item.damage;
-                    itemInfo.MonetaryValue = new CoinValue(item.value);
-                    itemInfo.MaxStack = item.maxStack;
-                    itemInfos.Add(itemInfo);
-                }
-                catch (Exception ex)
-                {
-                    TShock.Log.ConsoleError($"[ItemExporter]{i.ToString()}导出失败! {ex.Message}");
-                }
+        // Write all files as before
+        Write("prefix_id.json", prefixInfos);
+        Console.WriteLine($"[IdExporter]导出{prefixInfos.Count}个修饰语...");
 
-            Write("item_id.json", itemInfos);
-            Console.WriteLine($"[IdExporter]导出{itemInfos.Count}个弹幕...");
+        Write("buff_id.json", buffInfos);
+        Console.WriteLine($"[IdExporter]导出{buffInfos.Count}个Buff...");
 
-            List<NpcInfo> npcs = new();
-            foreach (KeyValuePair<int, string> i in NPCID.Search._idToName)
-                try
-                {
-                    if (i.Key < 0) continue;
-                    NpcInfo npc = new();
-                    NPCStatsReportInfoElement npcStatsReportInfoElement = new(i.Key);
-                    npc.Name = Lang.GetNPCNameValue(i.Key);
-                    npc.NpcId = i.Key;
-                    npc.Damage = npcStatsReportInfoElement.Damage;
-                    npc.LifeMax = npcStatsReportInfoElement.LifeMax;
-                    npc.MonetaryValue = new CoinValue((int)npcStatsReportInfoElement.MonetaryValue);
-                    string key = "Bestiary_FlavorText.npc_" + Lang.GetNPCName(i.Key).Key.Replace("NPCName.", "");
-                    if (Language.Exists(key))
-                        npc.Description = ReplaceTag(Language.GetText(key).Value);
-                    npcs.Add(npc);
-                }
-                catch (Exception ex)
-                {
-                    TShock.Log.ConsoleError($"[NPCExporter]{i.ToString()}导出失败! {ex.Message}");
-                }
+        Write("project_id.json", projectInfos);
+        Console.WriteLine($"[IdExporter]导出{projectInfos.Count}个弹幕...");
 
-            Write("npc_id.json", npcs);
-            Console.WriteLine($"[IdExporter]导出{npcs.Count}个生物...");
+        Write("item_id.json", itemInfos);
+        Console.WriteLine($"[IdExporter]导出{itemInfos.Count}个物品...");
 
-            Environment.Exit(0);
-        });
+        Write("npc_id.json", npcs);
+        Console.WriteLine($"[IdExporter]导出{npcs.Count}个生物...");
+
+        Environment.Exit(0);
     }
 
 
@@ -329,6 +424,7 @@ public partial class IDExporter : TerrariaPlugin
         public CoinValue MonetaryValue = new(0);
         public string Name = "";
         public int NpcId;
+        public List<string> Alias = new(); // Add this
     }
 
     public class ItemInfo
@@ -339,6 +435,7 @@ public partial class IDExporter : TerrariaPlugin
         public int MaxStack;
         public CoinValue MonetaryValue = new(0);
         public string Name = "";
+        public List<string> Alias = new(); // Add this
     }
 
     public class ProjectInfo
@@ -347,6 +444,7 @@ public partial class IDExporter : TerrariaPlugin
         public string Name = "";
         public int ProjId;
         public bool Friendly;
+        public List<string> Alias = new(); // Add this
     }
 
     public class BuffInfo
@@ -354,11 +452,13 @@ public partial class IDExporter : TerrariaPlugin
         public int BuffId;
         public string Description = "";
         public string Name = "";
+        public List<string> Alias = new(); // Add this
     }
 
     public class PrefixInfo
     {
         public string Name = "";
         public int PrefixId;
+        public List<string> Alias = new(); // Add this
     }
 }
